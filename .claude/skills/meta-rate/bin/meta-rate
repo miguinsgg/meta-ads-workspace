@@ -1,0 +1,119 @@
+#!/bin/bash
+set -euo pipefail
+
+# Marketing API rate-limit tracker (dev tier: 60 pts en ventana deslizante de 300s)
+# GET/HEAD = 1 pt · POST/PUT/DELETE/PATCH = 3 pts
+
+STATE_FILE="${META_RATE_STATE:-.meta-api-points.log}"
+WINDOW=300
+MAX=60
+WIDTH=30
+
+now=$(date +%s)
+
+usage() {
+  cat <<'EOF'
+Usage:
+  meta-rate add <METHOD> [endpoint]   Suma puntos y dibuja barra
+  meta-rate show                      Solo dibuja barra
+  meta-rate log                       Lista llamadas en la ventana
+  meta-rate reset                     Limpia el log
+
+Reglas dev tier:
+  GET/HEAD = 1 pt · POST/PUT/DELETE/PATCH = 3 pts
+  Decay: 300s sliding window · Max: 60 pts
+EOF
+  exit 1
+}
+
+cmd="${1:-show}"
+
+case "$cmd" in
+  add)
+    [ -z "${2:-}" ] && usage
+    method=$(echo "$2" | tr '[:lower:]' '[:upper:]')
+    endpoint="${3:-}"
+    case "$method" in
+      GET|HEAD) points=1 ;;
+      POST|PUT|DELETE|PATCH) points=3 ;;
+      *) echo "Método desconocido: $method (usa GET/POST/PUT/DELETE/PATCH/HEAD)"; exit 1 ;;
+    esac
+    printf "%s %s %s %s\n" "$now" "$points" "$method" "$endpoint" >> "$STATE_FILE"
+    ;;
+  show)
+    : ;;
+  log)
+    if [ ! -f "$STATE_FILE" ] || [ ! -s "$STATE_FILE" ]; then
+      echo "(sin llamadas en la ventana)"
+      exit 0
+    fi
+    cutoff=$((now - WINDOW))
+    printf "%-8s %-4s %-7s %s\n" "AGE(s)" "PTS" "METHOD" "ENDPOINT"
+    while read -r ts pts m ep; do
+      [ -z "$ts" ] && continue
+      if [ "$ts" -ge "$cutoff" ] 2>/dev/null; then
+        age=$((now - ts))
+        printf "%-8s %-4s %-7s %s\n" "$age" "$pts" "$m" "$ep"
+      fi
+    done < "$STATE_FILE"
+    exit 0
+    ;;
+  reset)
+    rm -f "$STATE_FILE"
+    echo "Reset."
+    exit 0
+    ;;
+  -h|--help|help) usage ;;
+  *) usage ;;
+esac
+
+# Compute total in window, prune old entries
+total=0
+oldest_ts=$now
+if [ -f "$STATE_FILE" ]; then
+  cutoff=$((now - WINDOW))
+  tmp=$(mktemp)
+  while read -r ts pts m ep; do
+    [ -z "$ts" ] && continue
+    if [ "$ts" -ge "$cutoff" ] 2>/dev/null; then
+      printf "%s %s %s %s\n" "$ts" "$pts" "$m" "$ep" >> "$tmp"
+      total=$((total + pts))
+      [ "$ts" -lt "$oldest_ts" ] && oldest_ts="$ts"
+    fi
+  done < "$STATE_FILE"
+  mv "$tmp" "$STATE_FILE"
+fi
+
+# Bar
+filled=$(( total * WIDTH / MAX ))
+[ "$filled" -gt "$WIDTH" ] && filled=$WIDTH
+bar=""
+i=0
+while [ $i -lt $WIDTH ]; do
+  if [ $i -lt $filled ]; then bar="${bar}█"; else bar="${bar}░"; fi
+  i=$((i+1))
+done
+
+# Color
+if   [ "$total" -ge 50 ]; then c="\033[31m"
+elif [ "$total" -ge 30 ]; then c="\033[33m"
+else                           c="\033[32m"
+fi
+r="\033[0m"
+
+# Reset estimate (oldest entry expiry)
+reset_in=0
+if [ "$total" -gt 0 ]; then
+  reset_in=$(( WINDOW - (now - oldest_ts) ))
+  [ "$reset_in" -lt 0 ] && reset_in=0
+fi
+
+if   [ "$total" -ge "$MAX" ]; then
+  printf "${c}[%s] %d/%d pts · LIMITE ALCANZADO · espera %ds${r}\n" "$bar" "$total" "$MAX" "$reset_in"
+elif [ "$total" -ge 50 ]; then
+  printf "${c}[%s] %d/%d pts · CUIDADO · decae en %ds${r}\n" "$bar" "$total" "$MAX" "$reset_in"
+elif [ "$total" -gt 0 ]; then
+  printf "${c}[%s] %d/%d pts · decae en %ds${r}\n" "$bar" "$total" "$MAX" "$reset_in"
+else
+  printf "${c}[%s] %d/%d pts · libre${r}\n" "$bar" "$total" "$MAX"
+fi

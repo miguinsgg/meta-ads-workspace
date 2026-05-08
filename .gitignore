@@ -1,0 +1,25 @@
+# Credenciales locales — NUNCA subir
+.env
+.env.local
+.env.*.local
+
+# Estado runtime del rate-limiter
+.meta-api-points.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python

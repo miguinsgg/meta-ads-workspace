@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""
+Ingest tool para skill preset-metricas.
+
+Subcomandos:
+  read <xlsx>            Lee el xlsx, devuelve JSON {level, headers}
+  match <xlsx>           Lee headers + intenta matchear contra known-mappings.json
+                         Devuelve JSON {level, columns:[{pos,name,mapping|null}], unmatched:[...]}
+  suggest <header>       Devuelve top 3 candidatos del diccionario por similitud
+  write <preset_json>    Recibe preset por stdin y lo guarda en presets/metricas/<name>.json
+                         Si --learn=col1,col2 se pasa, agrega esas columnas al known-mappings.json
+
+Sin dependencias externas (zipfile + xml.etree).
+"""
+
+import sys
+import os
+import json
+import zipfile
+import re
+import difflib
+from xml.etree import ElementTree as ET
+
+NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAPPINGS_FILE = os.path.join(SKILL_DIR, "known-mappings.json")
+
+
+def project_root():
+    """El skill vive en <repo>/.claude/skills/preset-metricas/. Subimos 3 niveles."""
+    return os.path.normpath(os.path.join(SKILL_DIR, "..", "..", ".."))
+
+
+def presets_dir():
+    return os.path.join(project_root(), "presets", "metricas")
+
+
+def load_mappings():
+    with open(MAPPINGS_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_mappings(data):
+    with open(MAPPINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def read_xlsx_headers(path):
+    """Devuelve la primera fila del primer sheet como lista de strings."""
+    with zipfile.ZipFile(path) as z:
+        sst = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            tree = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            for si in tree.findall("s:si", NS):
+                text = "".join(
+                    t.text or ""
+                    for t in si.iter(
+                        "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t"
+                    )
+                )
+                sst.append(text)
+        # Tomamos sheet1.xml (primer sheet)
+        sheet_name = "xl/worksheets/sheet1.xml"
+        if sheet_name not in z.namelist():
+            # fallback: primer sheet en el manifest
+            for n in z.namelist():
+                if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"):
+                    sheet_name = n
+                    break
+        sheet = z.read(sheet_name)
+
+    root = ET.fromstring(sheet)
+    sd = root.find("s:sheetData", NS)
+    rows = list(sd.findall("s:row", NS))
+    if not rows:
+        return []
+    out = []
+    for c in rows[0].findall("s:c", NS):
+        ctype = c.get("t")
+        if ctype == "inlineStr":
+            inline = c.find("s:is", NS)
+            text = ""
+            if inline is not None:
+                text = "".join(
+                    t.text or ""
+                    for t in inline.iter(
+                        "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t"
+                    )
+                )
+            out.append(text)
+            continue
+        v = c.find("s:v", NS)
+        if v is None or v.text is None:
+            out.append("")
+            continue
+        if ctype == "s":
+            try:
+                out.append(sst[int(v.text)])
+            except (ValueError, IndexError):
+                out.append(v.text)
+        else:
+            out.append(v.text)
+    # Limpiar headers vacíos al final
+    while out and (out[-1] is None or out[-1] == ""):
+        out.pop()
+    return out
+
+
+def infer_level(headers, mappings):
+    """Detecta el nivel del reporte por la primera columna que tenga implies_level."""
+    for h in headers:
+        m = mappings.get(h)
+        if m and m.get("implies_level"):
+            return m["implies_level"]
+    return "unknown"
+
+
+def fuzzy_suggest(header, mappings, top=3):
+    keys = list(mappings.keys())
+    matches = difflib.get_close_matches(header, keys, n=top, cutoff=0.5)
+    if matches:
+        return matches
+    # Fallback heurístico por tokens
+    h_lower = header.lower()
+    tokens = re.findall(r"\w+", h_lower)
+    scored = []
+    for k in keys:
+        k_lower = k.lower()
+        score = sum(1 for tok in tokens if tok in k_lower)
+        if score > 0:
+            scored.append((score, k))
+    scored.sort(reverse=True)
+    return [k for _, k in scored[:top]]
+
+
+def cmd_read(path):
+    headers = read_xlsx_headers(path)
+    mappings = load_mappings().get("mappings", {})
+    print(json.dumps({
+        "path": path,
+        "level": infer_level(headers, mappings),
+        "headers": headers,
+        "count": len(headers),
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_match(path):
+    headers = read_xlsx_headers(path)
+    data = load_mappings()
+    mappings = data.get("mappings", {})
+    columns = []
+    unmatched = []
+    for i, h in enumerate(headers, 1):
+        m = mappings.get(h)
+        if m:
+            columns.append({"pos": i, "name": h, "mapping": m})
+        else:
+            suggestions = fuzzy_suggest(h, mappings)
+            columns.append({"pos": i, "name": h, "mapping": None, "suggestions": suggestions})
+            unmatched.append(h)
+    print(json.dumps({
+        "path": path,
+        "level": infer_level(headers, mappings),
+        "count": len(headers),
+        "matched": len(headers) - len(unmatched),
+        "unmatched": unmatched,
+        "columns": columns,
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_suggest(header):
+    mappings = load_mappings().get("mappings", {})
+    print(json.dumps({
+        "header": header,
+        "exact": header in mappings,
+        "suggestions": fuzzy_suggest(header, mappings),
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_write(args):
+    """Lee preset JSON desde stdin, valida y escribe a presets/metricas/<name>.json.
+    Flag opcional: --overwrite, --learn-mappings (lee también un dict desde stdin)
+    """
+    overwrite = "--overwrite" in args
+    learn = "--learn-mappings" in args
+
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"JSON inválido en stdin: {e}\n")
+        sys.exit(2)
+
+    preset = payload.get("preset") if "preset" in payload else payload
+    new_mappings = payload.get("new_mappings", {}) if "preset" in payload else {}
+
+    required = ["name", "level", "columns"]
+    for k in required:
+        if k not in preset:
+            sys.stderr.write(f"Falta campo obligatorio: {k}\n")
+            sys.exit(2)
+
+    name = preset["name"]
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+        sys.stderr.write(f"Nombre inválido (solo a-z, A-Z, 0-9, _, -): {name}\n")
+        sys.exit(2)
+
+    os.makedirs(presets_dir(), exist_ok=True)
+    out_path = os.path.join(presets_dir(), f"{name}.json")
+
+    if os.path.exists(out_path) and not overwrite:
+        sys.stderr.write(f"Ya existe {out_path}. Pasa --overwrite para sobreescribir.\n")
+        sys.exit(3)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(preset, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    if learn and new_mappings:
+        data = load_mappings()
+        data.setdefault("mappings", {}).update(new_mappings)
+        save_mappings(data)
+
+    print(json.dumps({
+        "ok": True,
+        "path": out_path,
+        "level": preset["level"],
+        "columns": len(preset.get("columns", [])),
+        "api_fields": len(preset.get("api_fields", [])),
+        "learned": list(new_mappings.keys()) if learn else [],
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_list():
+    d = presets_dir()
+    if not os.path.isdir(d):
+        print(json.dumps({"presets": []}, indent=2))
+        return
+    files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+    out = []
+    for f in files:
+        try:
+            with open(os.path.join(d, f), encoding="utf-8") as fh:
+                p = json.load(fh)
+            out.append({
+                "name": p.get("name", f[:-5]),
+                "level": p.get("level"),
+                "columns": len(p.get("columns", [])),
+                "description": p.get("description", ""),
+                "file": f,
+            })
+        except Exception as e:
+            out.append({"file": f, "error": str(e)})
+    print(json.dumps({"presets": out}, ensure_ascii=False, indent=2))
+
+
+def usage():
+    sys.stderr.write(__doc__)
+    sys.exit(1)
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+    cmd, *rest = sys.argv[1:]
+    if cmd == "read":
+        if not rest:
+            usage()
+        cmd_read(rest[0])
+    elif cmd == "match":
+        if not rest:
+            usage()
+        cmd_match(rest[0])
+    elif cmd == "suggest":
+        if not rest:
+            usage()
+        cmd_suggest(" ".join(rest))
+    elif cmd == "write":
+        cmd_write(rest)
+    elif cmd == "list":
+        cmd_list()
+    elif cmd in ("-h", "--help", "help"):
+        usage()
+    else:
+        sys.stderr.write(f"Subcomando desconocido: {cmd}\n")
+        usage()
+
+
+if __name__ == "__main__":
+    main()

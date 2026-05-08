@@ -1,0 +1,76 @@
+{
+  "_meta": {
+    "description": "Diccionario columna en español (Meta Ads Manager export) → mapeo a campo de Marketing API o fórmula calculada. Usado por bin/ingest para auto-mapear headers conocidos. Cuando aparece una columna nueva y el usuario la mapea, este archivo se actualiza automáticamente.",
+    "currency_default": "COP"
+  },
+  "mappings": {
+    "Inicio del informe": {"source": "api", "field": "date_start"},
+    "Fin del informe": {"source": "api", "field": "date_stop"},
+    "Nombre del anuncio": {"source": "api", "field": "ad_name", "implies_level": "ad"},
+    "Nombre del conjunto de anuncios": {"source": "api", "field": "adset_name", "implies_level": "adset"},
+    "Nombre de la campaña": {"source": "api", "field": "campaign_name", "implies_level": "campaign"},
+    "Entrega del anuncio": {"source": "ad_node", "field": "effective_status"},
+    "Entrega del conjunto de anuncios": {"source": "adset_node", "field": "effective_status"},
+    "Entrega de la campaña": {"source": "campaign_node", "field": "effective_status"},
+    "Presupuesto del conjunto de anuncios": {"source": "adset_node", "field": "daily_budget OR lifetime_budget", "note": "centavos / 100"},
+    "Tipo de presupuesto del conjunto de anuncios": {"source": "adset_node", "field": "budget_type", "derived": true, "note": "Inferir como 'diario' si daily_budget>0, 'total' si lifetime_budget>0"},
+
+    "Importe gastado (COP)": {"source": "api", "field": "spend"},
+    "Importe gastado (USD)": {"source": "api", "field": "spend"},
+
+    "Valor de conversión de compras": {"source": "api", "field": "action_values", "filter_action_type": "offsite_conversion.fb_pixel_purchase"},
+    "ROAS de compras": {"source": "api", "field": "purchase_roas", "filter_action_type": "offsite_conversion.fb_pixel_purchase"},
+    "Compras": {"source": "api", "field": "actions", "filter_action_type": "offsite_conversion.fb_pixel_purchase"},
+    "Costo por compra (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "offsite_conversion.fb_pixel_purchase"},
+    "Costo por compra (USD)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "offsite_conversion.fb_pixel_purchase"},
+
+    "Ticket promedio": {"source": "calc", "formula": "valor_compras / compras"},
+    "Ticket Promedio": {"source": "calc", "formula": "valor_compras / compras"},
+    "Tasa de conversión": {"source": "calc", "formula": "compras / visitas_LP", "note": "Para flujos WhatsApp el denominador es conversaciones_iniciadas"},
+
+    "Pagos iniciados": {"source": "api", "field": "actions", "filter_action_type": "offsite_conversion.fb_pixel_initiate_checkout"},
+    "Costo por pago iniciado (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "offsite_conversion.fb_pixel_initiate_checkout"},
+    "% de pagos iniciados": {"source": "calc", "formula": "pagos_iniciados / visitas_LP", "note": "WhatsApp: pagos_iniciados / conversaciones_iniciadas"},
+
+    "Artículos agregados al carrito": {"source": "api", "field": "actions", "filter_action_type": "offsite_conversion.fb_pixel_add_to_cart"},
+    "Costo por artículo agregado al carrito (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "offsite_conversion.fb_pixel_add_to_cart"},
+    "% carritos": {"source": "calc", "formula": "ATC / visitas_LP", "note": "WhatsApp: ATC / conversaciones_iniciadas"},
+
+    "Visualizaciones de contenido": {"source": "api", "field": "actions", "filter_action_type": "offsite_conversion.fb_pixel_view_content"},
+    "Costo por visualización de contenido (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "offsite_conversion.fb_pixel_view_content"},
+
+    "Visitas a la página de destino del sitio web": {"source": "api", "field": "actions", "filter_action_type": "landing_page_view"},
+    "Visitas / Compras": {"source": "calc", "formula": "visitas_LP / compras"},
+    "Costo por visita a la página de destino (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "landing_page_view"},
+
+    "Conversaciones con mensajes iniciadas": {"source": "api", "field": "actions", "filter_action_type": "onsite_conversion.messaging_conversation_started_7d"},
+    "Costo por conversación con mensajes iniciada (COP)": {"source": "api", "field": "cost_per_action_type", "filter_action_type": "onsite_conversion.messaging_conversation_started_7d"},
+
+    "Clics en el enlace": {"source": "api", "field": "inline_link_clicks"},
+    "Calidad de clics": {"source": "calc", "formula": "visitas_LP / clics_enlace", "note": "WhatsApp: conversaciones_iniciadas / clics_enlace"},
+    "Clics / Compras": {"source": "calc", "formula": "clics_enlace / compras"},
+    "CPC (costo por clic en el enlace) (COP)": {"source": "api", "field": "cost_per_inline_link_click"},
+    "CTR (porcentaje de clics en el enlace)": {"source": "api", "field": "inline_link_click_ctr"},
+
+    "Hook rate": {"source": "calc", "formula": "video_3sec / impresiones"},
+    "Hold rate": {"source": "calc", "formula": "thruplays / video_3sec"},
+    "Reproducciones de video de 3 segundos": {"source": "api", "field": "video_3_sec_watched_actions", "filter_action_type": "video_view"},
+    "ThruPlays": {"source": "api", "field": "video_thruplay_watched_actions", "filter_action_type": "video_view"},
+    "Tiempo promedio de reproducción del video": {"source": "api", "field": "video_avg_time_watched_actions", "filter_action_type": "video_view"},
+    "Retencion 25%": {"source": "calc", "formula": "video_p25 / video_3sec"},
+    "Retencion 50%": {"source": "calc", "formula": "video_p50 / video_3sec"},
+    "Retencion 75%": {"source": "calc", "formula": "video_p75 / video_3sec"},
+    "Retencion 100%": {"source": "calc", "formula": "video_p100 / video_3sec"},
+
+    "Frecuencia": {"source": "api", "field": "frequency"},
+    "Alcance": {"source": "api", "field": "reach"},
+    "Costo por mil cuentas de Meta alcanzadas (COP)": {"source": "api", "field": "cost_per_1000_reached"},
+    "Impresiones": {"source": "api", "field": "impressions"},
+    "Impresiones / Compras": {"source": "calc", "formula": "impresiones / compras"},
+    "CPM (costo por mil impresiones) (COP)": {"source": "api", "field": "cpm"},
+
+    "Clasificación de calidad": {"source": "api", "field": "quality_ranking", "note": "solo nivel ad con >=500 impresiones"},
+    "Clasificación del porcentaje de interacción": {"source": "api", "field": "engagement_rate_ranking", "note": "solo nivel ad con >=500 impresiones"},
+    "Clasificación del porcentaje de conversiones": {"source": "api", "field": "conversion_rate_ranking", "note": "solo nivel ad con >=500 impresiones"}
+  }
+}
